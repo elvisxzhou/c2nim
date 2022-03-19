@@ -19,7 +19,7 @@ type
   TRenderFlags* = set[TRenderFlag]
   TRenderTok* = object
     kind*: TTokType
-    length*: int16
+    length*: int32
     sym*: PSym
 
   TRenderTokSeq* = seq[TRenderTok]
@@ -107,7 +107,7 @@ proc addTok(g: var TSrcGen, kind: TTokType, s: string; sym: PSym = nil) =
   var length = len(g.tokens)
   setLen(g.tokens, length + 1)
   g.tokens[length].kind = kind
-  g.tokens[length].length = int16(len(s))
+  g.tokens[length].length = int32(len(s))
   g.tokens[length].sym = sym
   add(g.buf, s)
 

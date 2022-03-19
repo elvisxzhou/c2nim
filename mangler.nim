@@ -16,6 +16,7 @@ proc `=~`(s: string, a: openArray[string]): bool =
     if s.startsWith(x): return true
 
 proc nep1(s: string, k: TSymKind): string =
+  if k == skConditional: return s
   let allUpper = allCharsInSet(s, {'A'..'Z', '0'..'9', '_'})
   if allUpper and k in {skConst, skEnumField, skVar}: return s
   var L = s.len
