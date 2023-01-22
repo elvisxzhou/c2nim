@@ -209,6 +209,7 @@ proc postprocess*(n: PNode; structStructMode, reorderComments: bool): PNode =
                   reorderComments: reorderComments,
                   structStructMode: structStructMode)
   result = n
+  #echo "post=" & n.tok.s
   pp(c, result)
 
 proc newIdentNode(s: string; n: PNode): PNode =

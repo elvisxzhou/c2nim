@@ -329,10 +329,12 @@ proc getNumber16(L: var Lexer, tok: var Token) =
   tok.s.add "0x"
   tok.base = base16
   var bits = 0
+  var suffix = ""
   while true:
     case L.buf[pos]
     of 'G'..'Z', 'g'..'z':
       # ignore type suffix:
+      tok.s.add L.buf[pos]
       inc(pos)
     of '_', '\'': inc(pos)
     of '0'..'9':

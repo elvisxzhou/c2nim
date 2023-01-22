@@ -109,6 +109,12 @@ type
 
   SectionParser = proc(p: var Parser): PNode {.nimcall.}
 
+from sequtils import map
+template printStacktrace*(num:int)=
+  var stackTraces = getStackTraceEntries()
+  echo stackTraces[stackTraces.len - num .. stackTraces.len-1].map( proc (x:StackTraceEntry):string =
+    "$1($2):$3)" % [$x.filename, $x.line, $x.procname]).join("\n")
+
 proc parseDir(p: var Parser; sectionParser: SectionParser): PNode
 proc addTypeDef(section, name, t, genericParams: PNode)
 proc parseStruct(p: var Parser, stmtList: PNode): PNode
@@ -1223,6 +1229,13 @@ proc otherTypeDef(p: var Parser, section, typ: PNode) =
     var x = parseFunctionPointerDecl(p, t)
     name = x[0]
     t = x[2]
+  elif p.tok.xkind == pxDirConc:
+    while p.tok.xkind == pxDirConc:
+      getTok(p)
+      t = newIdentNodeP("`" & t.ident.s & " " & p.tok.s.replace("_") & "`", p )
+      getTok(p)
+    otherTypeDef(p, section, t)
+    return
   else:
     # typedef typ name;
     if t.kind == nkNilLit: t = newIdentNodeP("void", p)
@@ -1247,13 +1260,27 @@ proc createConst(name, typ, val: PNode, p: Parser): PNode =
 proc extractNumber(s: string): tuple[succ: bool, val: BiggestInt] =
   try:
     if s.startsWith("0x"):
-      result = (true, fromHex[BiggestInt](s))
+      #remove suffix
+      var c = 2
+      while c < s.len and s[c] in "0123456789abcdefABCDEFG":
+        inc(c)
+      result = (true, fromHex[BiggestInt](s[0..c-1]))
     elif s.startsWith("0o"):
-      result = (true, fromOct[BiggestInt](s))
+      #remove suffix
+      var c = 2
+      while c < s.len and s[c] in "01234567":
+        inc(c)
+      result = (true, fromOct[BiggestInt](s[0..c-1]))
     elif s.startsWith("0b"):
-      result = (true, fromBin[BiggestInt](s))
+      var c = 2
+      while c < s.len and s[c] in "01":
+        inc(c)
+      result = (true, fromBin[BiggestInt](s[0..c-1]))
     else:
-      result = (true, parseBiggestInt(s))
+      var c = 0
+      while c < s.len and s[c] in "+-0123456789":
+        inc(c)
+      result = (true, parseBiggestInt(s[0..c-1]))
   except ValueError:
     result = (false, 0'i64)
 
@@ -1290,6 +1317,36 @@ proc buildStmtList(a: PNode): PNode
 
 include preprocessor
 
+proc applyCallToInfixRecursively(p: PNode, opName:string):PNode
+
+proc applyCallToIdentRecursively(p:PNode, opName:string):PNode=
+  if p.kind != nkIdent : return applyCallToInfixRecursively(p, opName)
+
+  result = newNodeI(nkCall, p.info)
+  var ordIdent = newNodeI(nkIdent,p.info)
+  ordIdent.ident = getIdent(opName)
+  result.addSon(ordIdent)
+  result.addSon(p)
+
+proc findFirstInfixRecursively(p:PNode):PNode=
+  if p.kind == nkInfix: return p
+  when declared(p.sons):
+    for s in p.sons:
+      return findFirstInfixRecursively(s)
+  return p
+
+proc applyCallToInfixRecursively(p: PNode, opName:string):PNode=
+  if p.kind == nkInfix:
+    p.sons[1] = applyCallToIdentRecursively(p.sons[1], opName)
+    p.sons[2] = applyCallToIdentRecursively(p.sons[2], opName)
+    return p
+  else:
+    var infix = findFirstInfixRecursively(p)
+    if infix.kind == nkInfix:
+      return applyCallToInfixRecursively(infix, opName)
+    else:
+      return p
+
 proc enumFields(p: var Parser, constList, stmtList: PNode): PNode =
   type EnumFieldKind = enum isNormal, isNumber, isAlias
   result = newNodeP(nkEnumTy, p)
@@ -1309,6 +1366,8 @@ proc enumFields(p: var Parser, constList, stmtList: PNode): PNode =
     if p.tok.xkind == pxAsgn:
       getTok(p, e)
       var c = constantExpression(p, e)
+      if c.kind == nkInfix:
+        c = applyCallToInfixRecursively(c, "ord")
       var a = e
       e = newNodeP(nkEnumFieldDef, p)
       addSon(e, a, c)
@@ -2087,10 +2146,10 @@ proc translateNumber(s: string; p: var Parser): PNode =
     else:
       result = newNumberNodeP(nkIntLit, s, p)
   else:
-    if s.startsWith("0x") or s.startsWith("0X"):
-      result = newNumberNodeP(nkIntLit, s & "'u", p)
-    else:
-      result = newNumberNodeP(nkInt64Lit, s, p)
+    #if s.startsWith("0x") or s.startsWith("0X"):
+    result = newNumberNodeP(nkIntLit, s, p)
+    #else:
+    #  result = newNumberNodeP(nkIntLit, s, p)
 
 proc startExpression(p: var Parser, tok: Token): PNode =
   case tok.xkind
@@ -2144,7 +2203,7 @@ proc startExpression(p: var Parser, tok: Token): PNode =
       result = optAngle(p, result)
       result = optInitializer(p, result)
   of pxIntLit:
-    result = newNumberNodeP(nkIntLit, tok.s, p)
+    result = translateNumber(tok.s, p)#newNumberNodeP(nkIntLit, tok.s, p) #
     setBaseFlags(result, tok.base)
   of pxInt64Lit:
     result = translateNumber(tok.s, p)
@@ -2415,6 +2474,15 @@ proc expression(p: var Parser, rbp: int = 0; parent: PNode = nil): PNode =
   getTok(p, parent)
 
   result = startExpression(p, tok)
+  const strExp = {pxStrLit, pxToString}
+  while tok.xkind in strExp and p.tok.xkind in strExp:
+    var infix = newNodeP(nkInfix, p)
+    addSon(infix, newIdentNodeP("&", p), result)
+    tok = p.tok[]
+    getTok(p, parent)
+    addSon(infix, startExpression(p, tok))
+    result = infix
+
   while rbp < leftBindingPower(p, p.tok):
     tok = p.tok[]
     getTok(p, result)
@@ -2456,6 +2524,10 @@ proc expressionStatement(p: var Parser): PNode =
     let semicolonRequired = p.tok.xkind != pxVerbatim
     result = expression(p)
     if p.tok.xkind == pxSemicolon: getTok(p)
+    elif p.tok.xkind == pxNewLine:
+      eat(p, pxNewLine)
+    elif p.tok.xkind == pxToString:
+      return
     elif semicolonRequired: parError(p, "expected ';'")
   assert result != nil
 
